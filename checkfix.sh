@@ -15,17 +15,18 @@ warn()     { printf '%s: %b%s%b\n' "$1" "$YELLOW" "$2" "$RESET" >&2; }
 fatal()    { printf 'checkfix: %b%s%b\n' "$RED" "$1" "$RESET" >&2; exit "${2:-1}"; }
 header()   { printf '\n%b────────────────────────────────────────%b\n%b%s%b\n' "$DIM" "$RESET" "$BOLD" "$1" "$RESET" >&2; }
 progress() { printf '\r\033[K%s: %b%s%b [%ss]' "$1" "$([[ $2 == stalled ]] && echo "$YELLOW" || echo "$DIM")" "$2" "$RESET" "$3" >&2; }
+now()      { date +%s; }
 
 show_issues() {
     [[ -z "$1" ]] && return
     local lines=$(grep -E '[a-zA-Z0-9_/-]+\.[a-zA-Z]+:[0-9]+' <<< "$1")
+    local count=$(wc -l <<< "${lines:-x}" | tr -d ' ')
     if [[ -z "$lines" ]]; then
         printf '%b%s%b\n' "$DIM" "$(head -5 <<< "$1" | sed 's/^/  /')" "$RESET" >&2
-        return
+    else
+        printf '%b%s%b\n' "$DIM" "$(head -10 <<< "$lines" | sed 's/^/  /')" "$RESET" >&2
+        (( count > 10 )) && printf '%b  ...and %d more%b\n' "$DIM" "$((count - 10))" "$RESET" >&2
     fi
-    local count=$(wc -l <<< "$lines" | tr -d ' ')
-    printf '%b%s%b\n' "$DIM" "$(head -10 <<< "$lines" | sed 's/^/  /')" "$RESET" >&2
-    (( count > 10 )) && printf '%b  ...and %d more%b\n' "$DIM" "$((count - 10))" "$RESET" >&2
 }
 
 for cmd in "shasum -a 256" sha256sum md5sum "md5 -r" cksum; do
@@ -37,8 +38,7 @@ hash_str() { printf '%s' "$1" | $HASH_CMD | cut -c1-16; }
 LOCK_ID=$(hash_str "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
 LOCK_DIR="/tmp/checkfix-${LOCK_ID}.lock" LOCK_PID="$LOCK_DIR/pid" LOG_DIR="/tmp/checkfix-${LOCK_ID}-$$"
 
-TIMEOUT_CMD=""; command -v gtimeout &>/dev/null && TIMEOUT_CMD=gtimeout
-command -v timeout &>/dev/null && TIMEOUT_CMD=timeout
+for cmd in gtimeout timeout; do command -v $cmd &>/dev/null && { TIMEOUT_CMD=$cmd; break; }; done
 
 MAX_ITERS=15 CLEAN_REQUIRED=3 RETRIES=2 TIMEOUT=1200 STUCK_THRESHOLD=90
 DRY_RUN=false CHILD_PID="" PHASE=""
@@ -177,27 +177,26 @@ is_stuck() {
 }
 
 run_cli() {
-    local prompt=$1 output=$2 cmd_parts start code last_size last_change now elapsed size status
+    local prompt=$1 output=$2 start last_size last_change elapsed size status code
     read -ra cmd_parts <<< "$CLI_CMD"
     cmd_parts+=("$prompt")
 
     for (( attempt=1; attempt<=RETRIES; attempt++ )); do
         $DRY_RUN && { echo "[PASS] Dry run" > "$output"; return 0; }
 
-        start=$(date +%s) last_size=0 last_change=$start code=0
+        start=$(now) last_size=0 last_change=$start
         : > "$output"
 
-        if [[ -n "$TIMEOUT_CMD" ]]; then "$TIMEOUT_CMD" "${TIMEOUT}s" "${cmd_parts[@]}" > "$output" 2>&1 &
+        if [[ -n "${TIMEOUT_CMD:-}" ]]; then "$TIMEOUT_CMD" "${TIMEOUT}s" "${cmd_parts[@]}" > "$output" 2>&1 &
         else "${cmd_parts[@]}" > "$output" 2>&1 & fi
         CHILD_PID=$!
 
         while kill -0 "$CHILD_PID" 2>/dev/null; do
             sleep 1
-            now=$(date +%s) elapsed=$((now - start)) status=active
-            size=$(wc -c < "$output" 2>/dev/null || echo 0)
-            [[ -z "$TIMEOUT_CMD" ]] && (( elapsed >= TIMEOUT )) && { kill "$CHILD_PID" 2>/dev/null; code=124; break; }
-            if (( size > last_size )); then last_size=$size last_change=$now
-            elif (( now - last_change >= STUCK_THRESHOLD )); then
+            elapsed=$(($(now) - start)) size=$(wc -c < "$output" 2>/dev/null || echo 0) status=active
+            [[ -z "${TIMEOUT_CMD:-}" ]] && (( elapsed >= TIMEOUT )) && { kill "$CHILD_PID" 2>/dev/null; wait "$CHILD_PID" 2>/dev/null; CHILD_PID=""; return 1; }
+            if (( size > last_size )); then last_size=$size last_change=$(now)
+            elif (( $(now) - last_change >= STUCK_THRESHOLD )); then
                 is_stuck "$output" && { printf '\n' >&2; fatal "CLI blocked on permission prompt"; }
                 status=stalled
             fi
@@ -250,21 +249,35 @@ EOF
 
 build_target() { file_mode && printf '%s\n' "${FILES[@]}" || git diff --name-only "$BASE"...HEAD; }
 
+finish() {
+    header Done
+    say checkfix "$clean_count passes in $iter iteration(s) ($(($(now) - SCRIPT_START))s)"
+    exit 0
+}
+
 run_fix() {
-    local issues=$1 target=$2 start hash_before hash_after size_before size_after changed blocked summary
+    local issues=$1 target=$2 start hash_before hash_after size_before size_after changed
     PHASE=fix; progress fix starting 0
-    start=$(date +%s) hash_before=$(state_hash) size_before=$(diff_size)
+    start=$(now) hash_before=$(state_hash) size_before=$(diff_size)
 
-    run_cli "$(fix_prompt "$issues" "$target")" "$LOG_DIR/fix_$iter.txt" || fatal "fix failed: CLI returned error"
+    run_cli "$(fix_prompt "$issues" "$target")" "$LOG_DIR/fix_$iter.txt" || fatal "fix failed: CLI error"
 
-    blocked=$(extract_tag BLOCKED "$LOG_DIR/fix_$iter.txt")
+    local blocked=$(extract_tag BLOCKED "$LOG_DIR/fix_$iter.txt")
     [[ -n "$blocked" ]] && fatal "fix blocked: $blocked"
 
     hash_after=$(state_hash)
     if [[ "$hash_before" == "$hash_after" ]]; then
-        summary=$(extract_tag DONE "$LOG_DIR/fix_$iter.txt")
+        local summary=$(extract_tag DONE "$LOG_DIR/fix_$iter.txt")
         [[ -n "$summary" ]] && warn fix "CLI claimed: $summary"
-        fatal "fix made no changes"
+        warn fix "no changes, re-verifying..."
+        local verify_start=$(now)
+        PHASE=verify; progress verify starting 0
+        if run_cli "$(check_prompt "$target")" "$LOG_DIR/verify_$iter.txt" && is_clean "$(<"$LOG_DIR/verify_$iter.txt")"; then
+            ok verify "$(($(now) - verify_start))" "false positive"
+            warn checkfix "issue was likely a false positive"
+            return 1
+        fi
+        fatal "fix made no changes and issue persists"
     fi
 
     size_after=$(diff_size) changed=$(( size_after - size_before ))
@@ -272,7 +285,7 @@ run_fix() {
     (( changed > 1000 )) && fatal "fix too large: exceeds 1000 line threshold"
 
     check_cycle
-    ok fix "$(($(date +%s) - start))" "$(extract_tag DONE "$LOG_DIR/fix_$iter.txt" || echo completed)"
+    ok fix "$(($(now) - start))" "$(extract_tag DONE "$LOG_DIR/fix_$iter.txt" || echo completed)"
     clean_count=0
 }
 
@@ -282,31 +295,31 @@ header Checkfix
 say checkfix "cli=$CLI max=$MAX_ITERS passes=$CLEAN_REQUIRED$($DRY_RUN && echo ' dry-run')"
 file_mode && say checkfix "${#FILES[@]} file(s): ${FILES[*]}" || verify_repo
 
-iter=0 clean_count=0 SCRIPT_START=$(date +%s)
+iter=0 clean_count=0 SCRIPT_START=$(now)
 SEEN_HASHES+=("$(state_hash)")
 
 while (( ++iter <= MAX_ITERS )); do
     header "Iteration $iter/$MAX_ITERS"
     TARGET=$(build_target)
     PHASE=check; progress check starting 0
-    start=$(date +%s)
+    start=$(now)
 
-    run_cli "$(check_prompt "$TARGET")" "$LOG_DIR/check_$iter.txt" || fatal "check failed: CLI returned error after $RETRIES attempts"
-    result=$(<"$LOG_DIR/check_$iter.txt") elapsed=$(($(date +%s) - start))
+    run_cli "$(check_prompt "$TARGET")" "$LOG_DIR/check_$iter.txt" || fatal "check failed: CLI error after $RETRIES attempts"
+    result=$(<"$LOG_DIR/check_$iter.txt") elapsed=$(($(now) - start))
 
     if ! is_clean "$result"; then
-        fail check "$elapsed"; show_issues "$result"; run_fix "$result" "$TARGET"; continue
+        fail check "$elapsed"; show_issues "$result"
+        if ! run_fix "$result" "$TARGET"; then
+            (( ++clean_count )); say progress "$clean_count/$CLEAN_REQUIRED consecutive passes (false positive)"
+            (( clean_count >= CLEAN_REQUIRED )) && finish
+        fi
+        continue
     fi
 
     ok check "$elapsed"
     (( ++clean_count )); say progress "$clean_count/$CLEAN_REQUIRED consecutive passes"
-
-    if (( clean_count >= CLEAN_REQUIRED )); then
-        header Done
-        say checkfix "$clean_count passes in $iter iteration(s) ($(($(date +%s) - SCRIPT_START))s)"
-        exit 0
-    fi
+    (( clean_count >= CLEAN_REQUIRED )) && finish
 done
 
-fatal "max iterations reached ($MAX_ITERS): check/fix cycle did not stabilize"
+fatal "max iterations ($MAX_ITERS): check/fix cycle did not stabilize"
 }
