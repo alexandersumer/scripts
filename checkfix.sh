@@ -1,7 +1,7 @@
 #!/bin/bash
 {
 set -u -o pipefail
-source "$(dirname "$0")/lib/agentcli.sh"
+source "$(dirname "$0")/common/agentcli.sh"
 
 header() { printf '\n%b───────────────────────────────────%b\n%b%s%b\n' "$DIM" "$RESET" "$BOLD" "$1" "$RESET" >&2; }
 show_issues() {
