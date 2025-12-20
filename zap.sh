@@ -16,15 +16,17 @@ fatal()    { printf 'zap: %b%s%b\n' "$RED" "$1" "$RESET" >&2; exit "${2:-1}"; }
 progress() { printf '\r\033[K%s: %b%s%b [%ss]' "$1" "$([[ $2 == stalled ]] && echo "$YELLOW" || echo "$DIM")" "$2" "$RESET" "$3" >&2; }
 now()      { date +%s; }
 
-PRESETS="pr improve check clean"
+PRESETS="pr improve build clean check fix"
 CLI_LIST="claude codex gemini rovo"
 
 preset_prompt() {
     case "$1" in
         pr)      echo "Analyze the diff against main and write a brief PR description in one short paragraph explaining the core issue and fix rationale. Skip file lists, bullets, implementation details, and line references. Follow with a one-line summary under 10 words in lowercase without punctuation. Keep everything clear, natural, and professional." ;;
         improve) echo "Analyze the diff against main and implement targeted, high-value improvements using robust, standard patterns. Ensure consistency and comprehensive test coverage. Keep the solution simple and self-documenting, strictly avoiding over-engineering and redundant comments." ;;
-        check)   echo "Run the build and test suite to ensure all checks pass. Fix any failures by addressing the root cause. Keep the solution simple and robust, strictly avoiding brittle workarounds or error suppression." ;;
+        build)   echo "Run the build and test suite to ensure all checks pass. Fix any failures by addressing the root cause. Keep the solution simple and robust, strictly avoiding brittle workarounds or error suppression." ;;
         clean)   echo "Refactor this code to be tighter and cleaner without sacrificing readability. Remove redundancy and fluff, simplify verbose expressions, but don't over-compress. Avoid unnecessary comments. Concise, not cryptic." ;;
+        check)   echo "Review for bugs: logic errors, crashes, data loss, security flaws, resource leaks, race conditions, performance problems. Consider overall purpose when evaluating correctness. Skip style, naming, refactoring opinions, speculative issues. Report all instances of each bug pattern found. Output: [PASS] if clean, or [FAIL] with: filename.ext:line - description max 12 words (one per line, no full paths, no markdown)" ;;
+        fix)     echo "Fix each bug with minimal changes. Fix all occurrences of each bug pattern. Follow existing patterns. Do not remove unrelated code. Run tests to verify. Output: [DONE] brief summary (max 10 words), or [BLOCKED] reason if unable." ;;
         *) return 1 ;;
     esac
 }
