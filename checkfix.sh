@@ -179,7 +179,6 @@ is_stuck() {
 run_cli() {
     local prompt=$1 output=$2 start last_size last_change elapsed size status code
     read -ra cmd_parts <<< "$CLI_CMD"
-    cmd_parts+=("$prompt")
 
     for (( attempt=1; attempt<=RETRIES; attempt++ )); do
         $DRY_RUN && { echo "[PASS] Dry run" > "$output"; return 0; }
@@ -187,8 +186,8 @@ run_cli() {
         start=$(now) last_size=0 last_change=$start
         : > "$output"
 
-        if [[ -n "${TIMEOUT_CMD:-}" ]]; then "$TIMEOUT_CMD" "${TIMEOUT}s" "${cmd_parts[@]}" > "$output" 2>&1 &
-        else "${cmd_parts[@]}" > "$output" 2>&1 & fi
+        if [[ -n "${TIMEOUT_CMD:-}" ]]; then printf '%s' "$prompt" | "$TIMEOUT_CMD" "${TIMEOUT}s" "${cmd_parts[@]}" > "$output" 2>&1 &
+        else printf '%s' "$prompt" | "${cmd_parts[@]}" > "$output" 2>&1 & fi
         CHILD_PID=$!
 
         while kill -0 "$CHILD_PID" 2>/dev/null; do
