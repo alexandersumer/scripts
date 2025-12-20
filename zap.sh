@@ -1,23 +1,9 @@
 #!/bin/bash
 {
 set -u -o pipefail
-
-RESET='' RED='' GREEN='' YELLOW='' BOLD='' DIM=''
-if [[ -t 1 || -t 2 ]] && [[ -z "${NO_COLOR:-}" ]] && command -v tput &>/dev/null && (( $(tput colors 2>/dev/null || echo 0) >= 8 )); then
-    BOLD=$(tput bold) DIM=$(tput dim) RESET=$(tput sgr0)
-    RED=$BOLD$(tput setaf 1) GREEN=$BOLD$(tput setaf 2) YELLOW=$BOLD$(tput setaf 3)
-fi
-
-say()      { printf '%s: %s\n' "$1" "$2" >&2; }
-ok()       { printf '%s: %b%s%b [%ss]\n' "$1" "$GREEN" "${2:-done}" "$RESET" "$3" >&2; }
-fail()     { printf '%s: %bfailed%b [%ss]\n' "$1" "$RED" "$RESET" "$2" >&2; }
-warn()     { printf '%s: %b%s%b\n' "$1" "$YELLOW" "$2" "$RESET" >&2; }
-fatal()    { printf 'zap: %b%s%b\n' "$RED" "$1" "$RESET" >&2; exit "${2:-1}"; }
-progress() { printf '\r\033[K%s: %b%s%b [%ss]' "$1" "$([[ $2 == stalled ]] && echo "$YELLOW" || echo "$DIM")" "$2" "$RESET" "$3" >&2; }
-now()      { date +%s; }
+source "$(dirname "$0")/lib/agentcli.sh"
 
 PRESETS="pr improve build clean check checkfix"
-CLI_LIST="claude codex gemini rovo"
 
 preset_prompt() {
     case "$1" in
@@ -30,15 +16,6 @@ preset_prompt() {
         *) return 1 ;;
     esac
 }
-
-cli_cmd() {
-    case "$1" in
-        claude) echo "claude --print" ;; codex) echo "codex exec" ;;
-        gemini) echo "gemini" ;; rovo) echo "acli rovodev run" ;; *) return 1 ;;
-    esac
-}
-
-for cmd in gtimeout timeout; do command -v $cmd &>/dev/null && { TIMEOUT_CMD=$cmd; break; }; done
 
 TIMEOUT=300 RETRIES=2 STUCK_THRESHOLD=90
 RAW=false CHILD_PID="" PROMPT="" FILES=()
@@ -82,9 +59,6 @@ list_presets() {
     for name in $PRESETS; do printf '  %b%-12s%b %.60s...\n' "$GREEN" "$name" "$RESET" "$(preset_prompt "$name")"; done
     exit 0
 }
-
-require_int() { [[ "$2" =~ ^[1-9][0-9]*$ ]] || fatal "$1 must be a positive integer"; }
-require_val() { [[ -n "${2:-}" && ! "$2" =~ ^- ]] || fatal "$1 requires a value"; }
 
 PRESET=""
 while [[ $# -gt 0 ]]; do
@@ -161,12 +135,6 @@ build_context() {
     fi
 }
 
-is_stuck() {
-    [[ -f "$1" ]] || return 1
-    local c=$(tail -20 "$1" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-    [[ "$c" =~ (allow|permit|approve|confirm|continue|proceed).*(y/n|\[y\]|yes.*no|\?) || "$c" =~ [\(\[]y/?n[\)\]] ]]
-}
-
 run_cli() {
     local prompt=$1 output=$2 start last_size last_change elapsed size status code
     read -ra cmd <<< "$CLI_CMD"
@@ -219,6 +187,6 @@ if ! run_cli "$(build_context)"$'\n\n'"$PROMPT" "$TMPFILE"; then
     exit 1
 fi
 
-$RAW || ok zap completed "$(($(now) - START))"
+$RAW || ok zap "$(($(now) - START))" completed
 cat "$TMPFILE"
 }

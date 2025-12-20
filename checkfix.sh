@@ -1,21 +1,9 @@
 #!/bin/bash
 {
 set -u -o pipefail
+source "$(dirname "$0")/lib/agentcli.sh"
 
-RESET='' RED='' GREEN='' YELLOW='' BOLD='' DIM=''
-if [[ -t 1 || -t 2 ]] && [[ -z "${NO_COLOR:-}" ]] && command -v tput &>/dev/null && (( $(tput colors 2>/dev/null || echo 0) >= 8 )); then
-    BOLD=$(tput bold) DIM=$(tput dim) RESET=$(tput sgr0)
-    RED=$BOLD$(tput setaf 1) GREEN=$BOLD$(tput setaf 2) YELLOW=$BOLD$(tput setaf 3)
-fi
-
-say()      { printf '%s: %s\n' "$1" "$2" >&2; }
-ok()       { printf '\r\033[K%s: %b%s%b [%ss]\n' "$1" "$GREEN" "${3:-passed}" "$RESET" "$2" >&2; }
-fail()     { printf '\r\033[K%s: %bfailed%b [%ss]\n' "$1" "$RED" "$RESET" "$2" >&2; }
-warn()     { printf '%s: %b%s%b\n' "$1" "$YELLOW" "$2" "$RESET" >&2; }
-fatal()    { printf 'checkfix: %b%s%b\n' "$RED" "$1" "$RESET" >&2; exit "${2:-1}"; }
-header()   { printf '\n%b────────────────────────────────────────%b\n%b%s%b\n' "$DIM" "$RESET" "$BOLD" "$1" "$RESET" >&2; }
-progress() { printf '\r\033[K%s: %b%s%b [%ss]' "$1" "$([[ $2 == stalled ]] && echo "$YELLOW" || echo "$DIM")" "$2" "$RESET" "$3" >&2; }
-now()      { date +%s; }
+header() { printf '\n%b────────────────────────────────────────%b\n%b%s%b\n' "$DIM" "$RESET" "$BOLD" "$1" "$RESET" >&2; }
 
 show_issues() {
     [[ -z "$1" ]] && return
@@ -38,19 +26,10 @@ hash_str() { printf '%s' "$1" | $HASH_CMD | cut -c1-16; }
 LOCK_ID=$(hash_str "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
 LOCK_DIR="/tmp/checkfix-${LOCK_ID}.lock" LOCK_PID="$LOCK_DIR/pid" LOG_DIR="/tmp/checkfix-${LOCK_ID}-$$"
 
-for cmd in gtimeout timeout; do command -v $cmd &>/dev/null && { TIMEOUT_CMD=$cmd; break; }; done
-
 MAX_ITERS=15 CLEAN_REQUIRED=3 RETRIES=2 TIMEOUT=1200 STUCK_THRESHOLD=90
 DRY_RUN=false CHILD_PID="" PHASE=""
 FILES=() SEEN_HASHES=()
 
-cli_cmd() {
-    case "$1" in
-        claude) echo "claude --print" ;; codex) echo "codex exec" ;;
-        gemini) echo "gemini" ;; rovo) echo "acli rovodev run" ;; *) return 1 ;;
-    esac
-}
-CLI_LIST="claude codex gemini rovo"
 CLI="${CHECKFIX_CLI:-claude}"
 [[ -n "${CHECKFIX_CLI:-}" ]] && ! cli_cmd "$CLI" >/dev/null && fatal "unknown CLI: $CLI (available: $CLI_LIST)"
 
@@ -93,9 +72,6 @@ Examples:
 EOF
     exit 0
 }
-
-require_int() { [[ "$2" =~ ^[1-9][0-9]*$ ]] || fatal "$1 must be a positive integer"; }
-require_val() { [[ -n "$2" && ! "$2" =~ ^- ]] || fatal "$1 requires a value"; }
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -168,12 +144,6 @@ verify_repo() {
     git diff --quiet "$BASE"...HEAD 2>/dev/null && git diff --quiet HEAD 2>/dev/null && git diff --quiet --cached 2>/dev/null &&
         fatal "no changes detected: nothing to check"
     say checkfix "$BRANCH → $BASE"
-}
-
-is_stuck() {
-    [[ -f "$1" ]] || return 1
-    local c=$(tail -20 "$1" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-    [[ "$c" =~ (allow|permit|approve|confirm).*(y/n|\[y\]|yes.*no) || "$c" =~ [\(\[]y/n[\)\]] ]]
 }
 
 run_cli() {
@@ -315,7 +285,7 @@ while (( ++iter <= MAX_ITERS )); do
         continue
     fi
 
-    ok check "$elapsed"
+    ok check "$elapsed" passed
     (( ++clean_count )); say progress "$clean_count/$CLEAN_REQUIRED consecutive passes"
     (( clean_count >= CLEAN_REQUIRED )) && finish
 done
