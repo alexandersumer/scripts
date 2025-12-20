@@ -7,8 +7,9 @@ header() { printf '\n%b───────────────────
 
 show_issues() {
     [[ -z "$1" ]] && return
-    local lines=$(grep -E '[a-zA-Z0-9_/-]+\.[a-zA-Z]+:[0-9]+' <<< "$1")
-    local count=$(wc -l <<< "${lines:-x}" | tr -d ' ')
+    local lines count
+    lines=$(grep -E '[a-zA-Z0-9_/-]+\.[a-zA-Z]+:[0-9]+' <<< "$1") || true
+    count=$(wc -l <<< "${lines:-x}" | tr -d ' ')
     if [[ -z "$lines" ]]; then
         printf '%b%s%b\n' "$DIM" "$(head -5 <<< "$1" | sed 's/^/  /')" "$RESET" >&2
     else
@@ -47,7 +48,8 @@ diff_size() {
 }
 
 check_cycle() {
-    local hash=$(state_hash) i=0
+    local hash i=0
+    hash=$(state_hash)
     for seen in "${SEEN_HASHES[@]}"; do
         [[ "$seen" == "$hash" ]] && fatal "cycle detected: state matches ${i:+iteration $i}${i:-initial state}"
         ((i++))
@@ -87,7 +89,7 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        -l|--cli) require_val "$1" "$2"; cli_cmd "$2" >/dev/null || fatal "unknown CLI: $2"; CLI="$2"; shift 2 ;;
+        -l|--cli) require_val "$1" "${2:-}"; cli_cmd "$2" >/dev/null || fatal "unknown CLI: $2"; CLI="$2"; shift 2 ;;
         -f|--files)
             shift
             while [[ $# -gt 0 && ! "$1" =~ ^- ]]; do
@@ -95,10 +97,10 @@ while [[ $# -gt 0 ]]; do
                 FILES+=("$(realpath "$1")"); shift
             done
             (( ${#FILES[@]} )) || fatal "--files requires at least one file" ;;
-        -m|--max-iterations) require_val "$1" "$2"; MAX_ITERS="$2"; shift 2 ;;
-        -c|--consecutive)    require_val "$1" "$2"; CLEAN_REQUIRED="$2"; shift 2 ;;
-        -r|--retries)        require_val "$1" "$2"; RETRIES="$2"; shift 2 ;;
-        -t|--timeout)        require_val "$1" "$2"; TIMEOUT="$2"; shift 2 ;;
+        -m|--max-iterations) require_val "$1" "${2:-}"; require_int "$1" "$2"; MAX_ITERS=$2; shift 2 ;;
+        -c|--consecutive)    require_val "$1" "${2:-}"; require_int "$1" "$2"; CLEAN_REQUIRED=$2; shift 2 ;;
+        -r|--retries)        require_val "$1" "${2:-}"; require_int "$1" "$2"; RETRIES=$2; shift 2 ;;
+        -t|--timeout)        require_val "$1" "${2:-}"; require_int "$1" "$2"; TIMEOUT=$2; shift 2 ;;
         -R|--repo) REPO=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
         -h|--help) usage ;;
@@ -108,21 +110,18 @@ done
 
 $REPO && (( ${#FILES[@]} )) && fatal "cannot use both --repo and --files"
 
-require_int "--max-iterations" "$MAX_ITERS"
-require_int "--consecutive" "$CLEAN_REQUIRED"
-require_int "--retries" "$RETRIES"
-require_int "--timeout" "$TIMEOUT"
-
 CLI_CMD=$(cli_cmd "$CLI")
 [[ -n "${CHECKFIX_CLI_CMD:-}" ]] && CLI_CMD="$CHECKFIX_CLI_CMD" CLI="custom"
 command -v "${CLI_CMD%% *}" &>/dev/null || fatal "$CLI not found in PATH"
 
+# shellcheck disable=SC2329  # Used by trap
 cleanup() {
     local code=$?
+    trap - EXIT
     [[ -n "$CHILD_PID" ]] && kill "$CHILD_PID" 2>/dev/null
     [[ -f "$LOCK_PID" && "$(<"$LOCK_PID")" == "$$" ]] && rm -rf "$LOCK_DIR"
-    (( code == 0 )) && rm -rf "$LOG_DIR" || say checkfix "logs: $LOG_DIR"
-    exit $code
+    if (( code == 0 )); then rm -rf "$LOG_DIR"; else say checkfix "logs: $LOG_DIR"; fi
+    exit "$code"
 }
 trap 'printf "\n" >&2; warn checkfix interrupted; cleanup' INT TERM
 trap cleanup EXIT
@@ -151,7 +150,7 @@ verify_repo() {
 
     BASE=; for b in main master; do git rev-parse --verify "$b" &>/dev/null && { BASE=$b; break; }; done
     if [[ -z "$BASE" ]] || git diff --quiet "$BASE"...HEAD 2>/dev/null; then
-        local upstream=$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
+        local upstream; upstream=$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null) || true
         [[ -n "$upstream" ]] && ! git diff --quiet "$upstream"...HEAD 2>/dev/null && BASE=$upstream
     fi
     [[ -z "$BASE" ]] && fatal "no base branch found: ensure main/master exists or use --files"
@@ -199,7 +198,7 @@ run_cli() {
     return 1
 }
 
-is_clean() { local s=$(tr -d '[:space:]*_\`#' <<< "$1"); [[ "$s" =~ \[PASS\] && ! "$s" =~ \[FAIL\] ]]; }
+is_clean() { local s; s=$(tr -d '[:space:]*_\`#' <<< "$1"); [[ "$s" =~ \[PASS\] && ! "$s" =~ \[FAIL\] ]]; }
 extract_tag() { grep -oE "\[$1\].*" "$2" 2>/dev/null | head -1 | sed "s/\[$1\][[:space:]]*//"; }
 
 check_prompt() {
@@ -252,7 +251,7 @@ EOF
     fi
 }
 
-build_target() { repo_mode && return; file_mode && printf '%s\n' "${FILES[@]}" || git diff --name-only "$BASE"...HEAD; }
+build_target() { repo_mode && return; if file_mode; then printf '%s\n' "${FILES[@]}"; else git diff --name-only "$BASE"...HEAD; fi; }
 
 finish() {
     header Done
@@ -261,21 +260,21 @@ finish() {
 }
 
 run_fix() {
-    local issues=$1 target=$2 start hash_before hash_after size_before size_after changed
+    local issues=$1 target=$2 start hash_before hash_after size_before size_after changed blocked summary verify_start
     PHASE=fix; progress fix starting 0
     start=$(now) hash_before=$(state_hash) size_before=$(diff_size)
 
     run_cli "$(fix_prompt "$issues" "$target")" "$LOG_DIR/fix_$iter.txt" || fatal "fix failed: CLI error"
 
-    local blocked=$(extract_tag BLOCKED "$LOG_DIR/fix_$iter.txt")
+    blocked=$(extract_tag BLOCKED "$LOG_DIR/fix_$iter.txt")
     [[ -n "$blocked" ]] && fatal "fix blocked: $blocked"
 
     hash_after=$(state_hash)
     if [[ "$hash_before" == "$hash_after" ]]; then
-        local summary=$(extract_tag DONE "$LOG_DIR/fix_$iter.txt")
+        summary=$(extract_tag DONE "$LOG_DIR/fix_$iter.txt")
         [[ -n "$summary" ]] && warn fix "CLI claimed: $summary"
         warn fix "no changes, re-verifying..."
-        local verify_start=$(now)
+        verify_start=$(now)
         PHASE=verify; progress verify starting 0
         if run_cli "$(check_prompt "$target")" "$LOG_DIR/verify_$iter.txt" && is_clean "$(<"$LOG_DIR/verify_$iter.txt")"; then
             ok verify "$(($(now) - verify_start))" "false positive"

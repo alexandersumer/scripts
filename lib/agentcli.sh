@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2034  # Variables used by sourcing scripts
 SCRIPT_NAME="${SCRIPT_NAME:-$(basename "$0" .sh)}"
 
 RESET='' RED='' GREEN='' YELLOW='' BOLD='' DIM=''
@@ -29,6 +31,6 @@ require_val() { [[ -n "${2:-}" && ! "$2" =~ ^- ]] || fatal "$1 requires a value"
 
 is_stuck() {
     [[ -f "$1" ]] || return 1
-    local c=$(tail -20 "$1" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+    local c; c=$(tail -20 "$1" 2>/dev/null | tr '[:upper:]' '[:lower:]')
     [[ "$c" =~ (allow|permit|approve|confirm|continue|proceed).*(y/n|\[y\]|yes.*no|\?) || "$c" =~ [\(\[]y/?n[\)\]] ]]
 }
