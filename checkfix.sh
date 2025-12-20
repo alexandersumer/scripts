@@ -27,15 +27,24 @@ LOCK_ID=$(hash_str "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
 LOCK_DIR="/tmp/checkfix-${LOCK_ID}.lock" LOCK_PID="$LOCK_DIR/pid" LOG_DIR="/tmp/checkfix-${LOCK_ID}-$$"
 
 MAX_ITERS=15 CLEAN_REQUIRED=3 RETRIES=2 TIMEOUT=1200 STUCK_THRESHOLD=90
-DRY_RUN=false CHILD_PID="" PHASE=""
+DRY_RUN=false REPO=false CHILD_PID="" PHASE=""
 FILES=() SEEN_HASHES=()
 
 CLI="${CHECKFIX_CLI:-claude}"
 [[ -n "${CHECKFIX_CLI:-}" ]] && ! cli_cmd "$CLI" >/dev/null && fatal "unknown CLI: $CLI (available: $CLI_LIST)"
 
 file_mode() { (( ${#FILES[@]} > 0 )); }
-state_hash() { hash_str "$(file_mode && cat -- "${FILES[@]}" || git diff "$BASE"...HEAD)" 2>/dev/null; }
-diff_size() { file_mode && wc -l < <(cat -- "${FILES[@]}") | tr -d ' ' || git diff --numstat "$BASE"...HEAD 2>/dev/null | awk '{s+=$1+$2} END {print s+0}'; }
+repo_mode() { $REPO; }
+state_hash() {
+    if repo_mode; then hash_str "$(git ls-files -z 2>/dev/null | xargs -0 cat 2>/dev/null)"
+    elif file_mode; then hash_str "$(cat -- "${FILES[@]}")"
+    else hash_str "$(git diff "$BASE"...HEAD)"; fi
+}
+diff_size() {
+    if repo_mode; then git ls-files -z 2>/dev/null | xargs -0 wc -l 2>/dev/null | tail -1 | awk '{print $1+0}'
+    elif file_mode; then wc -l < <(cat -- "${FILES[@]}") | tr -d ' '
+    else git diff --numstat "$BASE"...HEAD 2>/dev/null | awk '{s+=$1+$2} END {print s+0}'; fi
+}
 
 check_cycle() {
     local hash=$(state_hash) i=0
@@ -55,10 +64,12 @@ Iteratively check and fix code until stable.
 Modes:
     Git mode (default):  Check branch diff against main/master
     File mode:           Check specific files with --files
+    Repo mode:           Let CLI explore entire repo with --repo
 
 Options:
     -l, --cli NAME           CLI to use (default: $CLI, available: $CLI_LIST)
     -f, --files FILE...      Check specific files instead of git diff
+    -R, --repo               Run repo-wide (CLI explores on its own)
     -m, --max-iterations N   Max iterations (default: $MAX_ITERS)
     -c, --consecutive N      Consecutive passes needed (default: $CLEAN_REQUIRED)
     -r, --retries N          Retries per call (default: $RETRIES)
@@ -69,6 +80,7 @@ Options:
 Examples:
     $(basename "$0")                       # Check current branch
     $(basename "$0") -l codex -f lib.py    # Check file with Codex
+    $(basename "$0") --repo                # Check entire repo
 EOF
     exit 0
 }
@@ -87,11 +99,14 @@ while [[ $# -gt 0 ]]; do
         -c|--consecutive)    require_val "$1" "$2"; CLEAN_REQUIRED="$2"; shift 2 ;;
         -r|--retries)        require_val "$1" "$2"; RETRIES="$2"; shift 2 ;;
         -t|--timeout)        require_val "$1" "$2"; TIMEOUT="$2"; shift 2 ;;
+        -R|--repo) REPO=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
         -h|--help) usage ;;
         *) fatal "unknown option: $1" ;;
     esac
 done
+
+$REPO && (( ${#FILES[@]} )) && fatal "cannot use both --repo and --files"
 
 require_int "--max-iterations" "$MAX_ITERS"
 require_int "--consecutive" "$CLEAN_REQUIRED"
@@ -187,7 +202,16 @@ run_cli() {
 is_clean() { local s=$(tr -d '[:space:]*_\`#' <<< "$1"); [[ "$s" =~ \[PASS\] && ! "$s" =~ \[FAIL\] ]]; }
 extract_tag() { grep -oE "\[$1\].*" "$2" 2>/dev/null | head -1 | sed "s/\[$1\][[:space:]]*//"; }
 
-check_prompt() { cat <<EOF
+check_prompt() {
+    if repo_mode; then cat <<EOF
+Review this repository for bugs: logic errors, crashes, data loss, security flaws, resource leaks, race conditions, performance problems.
+Consider overall purpose when evaluating correctness. Skip style, naming, refactoring opinions, speculative issues.
+Report all instances of each bug pattern found.
+
+Output: [PASS] if clean, or [FAIL] with:
+filename.ext:line - description max 12 words (one per line, no full paths, no markdown)
+EOF
+    else cat <<EOF
 <files>
 $1
 </files>
@@ -199,9 +223,20 @@ Report all instances of each bug pattern found.
 Output: [PASS] if clean, or [FAIL] with:
 filename.ext:line - description max 12 words (one per line, no full paths, no markdown)
 EOF
+    fi
 }
 
-fix_prompt() { cat <<EOF
+fix_prompt() {
+    if repo_mode; then cat <<EOF
+<issues>
+$1
+</issues>
+
+Fix each issue with minimal changes. Fix all occurrences of each bug pattern. Follow existing patterns. Do not remove unrelated code. Run tests to verify.
+
+Output: [DONE] brief summary (max 10 words), or [BLOCKED] reason if unable.
+EOF
+    else cat <<EOF
 <files>
 $2
 </files>
@@ -214,9 +249,10 @@ Fix each issue with minimal changes. Fix all occurrences of each bug pattern. Fo
 
 Output: [DONE] brief summary (max 10 words), or [BLOCKED] reason if unable.
 EOF
+    fi
 }
 
-build_target() { file_mode && printf '%s\n' "${FILES[@]}" || git diff --name-only "$BASE"...HEAD; }
+build_target() { repo_mode && return; file_mode && printf '%s\n' "${FILES[@]}" || git diff --name-only "$BASE"...HEAD; }
 
 finish() {
     header Done
@@ -262,7 +298,14 @@ mkdir -p "$LOG_DIR"
 acquire_lock
 header Checkfix
 say checkfix "cli=$CLI max=$MAX_ITERS passes=$CLEAN_REQUIRED$($DRY_RUN && echo ' dry-run')"
-file_mode && say checkfix "${#FILES[@]} file(s): ${FILES[*]}" || verify_repo
+if repo_mode; then
+    git rev-parse --git-dir &>/dev/null || fatal "not a git repository"
+    say checkfix "repo-wide"
+elif file_mode; then
+    say checkfix "${#FILES[@]} file(s): ${FILES[*]}"
+else
+    verify_repo
+fi
 
 iter=0 clean_count=0 SCRIPT_START=$(now)
 SEEN_HASHES+=("$(state_hash)")

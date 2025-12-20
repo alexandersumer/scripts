@@ -18,7 +18,7 @@ preset_prompt() {
 }
 
 TIMEOUT=300 RETRIES=2 STUCK_THRESHOLD=90
-RAW=false CHILD_PID="" PROMPT="" FILES=()
+RAW=false REPO=false CHILD_PID="" PROMPT="" FILES=()
 CLI="${ZAP_CLI:-claude}"
 [[ -n "${ZAP_CLI:-}" ]] && ! cli_cmd "$CLI" >/dev/null && fatal "unknown CLI: $CLI (available: $CLI_LIST)"
 
@@ -32,10 +32,12 @@ Run a single prompt against code context.
 Modes:
     Git mode (default):  Analyze branch diff against main/master
     File mode:           Analyze specific files with --files
+    Repo mode:           Let CLI explore entire repo with --repo
 
 Options:
     -l, --cli NAME       CLI to use (default: $CLI, available: $CLI_LIST)
     -f, --files FILE...  Target specific files instead of git diff
+    -R, --repo           Run prompt repo-wide (CLI explores on its own)
     -p, --prompt TEXT    Custom prompt (use - for stdin)
     -t, --timeout SECS   Timeout per call (default: $TIMEOUT)
     -r, --retries N      Retries on failure (default: $RETRIES)
@@ -48,7 +50,7 @@ Presets: $PRESETS
 Examples:
     $(basename "$0") pr
     $(basename "$0") --files lib.py clean
-    $(basename "$0") -p "Explain this code"
+    $(basename "$0") --repo -p "Find security issues"
     echo "Review for bugs" | $(basename "$0") -p -
 EOF
     exit 0
@@ -81,6 +83,7 @@ while [[ $# -gt 0 ]]; do
         -t|--timeout) require_val "$1" "${2:-}"; require_int "$1" "$2"; TIMEOUT=$2; shift 2 ;;
         -r|--retries) require_val "$1" "${2:-}"; require_int "$1" "$2"; RETRIES=$2; shift 2 ;;
         --raw) RAW=true; shift ;;
+        -R|--repo) REPO=true; shift ;;
         --list) list_presets ;;
         -h|--help) usage ;;
         -*) fatal "unknown option: $1" ;;
@@ -88,9 +91,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+$REPO && (( ${#FILES[@]} )) && fatal "cannot use both --repo and --files"
+
 if [[ -n "$PRESET" && -n "$PROMPT" ]]; then
     fatal "cannot use both preset and --prompt"
 elif [[ -n "$PRESET" ]]; then
+    $REPO && [[ "$PRESET" =~ ^(pr|improve|clean)$ ]] && fatal "preset '$PRESET' requires file context; use -p or a repo-compatible preset (build, check, checkfix)"
     PROMPT=$(preset_prompt "$PRESET") || fatal "unknown preset: $PRESET (use --list to see available)"
 elif [[ -z "$PROMPT" ]]; then
     fatal "missing preset or --prompt (use --help for usage)"
@@ -126,6 +132,7 @@ verify_repo() {
 }
 
 build_context() {
+    $REPO && return
     if (( ${#FILES[@]} )); then
         printf '<files>\n'
         for f in "${FILES[@]}"; do printf '=== %s ===\n%s\n' "$f" "$(cat -- "$f")"; done
@@ -177,7 +184,14 @@ run_cli() {
     return 1
 }
 
-(( ${#FILES[@]} )) && { $RAW || say zap "${#FILES[@]} file(s)"; } || verify_repo
+if $REPO; then
+    git rev-parse --git-dir &>/dev/null || fatal "not a git repository"
+    $RAW || say zap "repo-wide"
+elif (( ${#FILES[@]} )); then
+    $RAW || say zap "${#FILES[@]} file(s)"
+else
+    verify_repo
+fi
 
 TMPFILE=$(mktemp) || fatal "cannot create temp file"
 START=$(now)
