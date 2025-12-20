@@ -1,3 +1,4 @@
+# vars used by sourcing scripts
 # shellcheck shell=bash disable=SC2034
 SCRIPT_NAME="${SCRIPT_NAME:-$(basename "$0" .sh)}"
 RESET='' RED='' GREEN='' YELLOW='' BOLD='' DIM=''

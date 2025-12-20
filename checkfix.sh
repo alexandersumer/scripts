@@ -88,11 +88,13 @@ CLI_CMD=$(cli_cmd "$CLI")
 [[ -n "${CHECKFIX_CLI_CMD:-}" ]] && CLI_CMD=$CHECKFIX_CLI_CMD CLI=custom
 command -v "${CLI_CMD%% *}" &>/dev/null || fatal "$CLI not found"
 
-cleanup() { # shellcheck disable=SC2317
+# invoked via trap
+# shellcheck disable=SC2317,SC2329
+cleanup() {
     local code=$?; trap - EXIT
     [[ -n "$CHILD_PID" ]] && kill "$CHILD_PID" 2>/dev/null
     [[ -f "$LOCK_PID" && "$(<"$LOCK_PID")" == "$$" ]] && rm -rf "$LOCK_DIR"
-    (( code )) && say checkfix "logs: $LOG_DIR" || rm -rf "$LOG_DIR"
+    if (( code )); then say checkfix "logs: $LOG_DIR"; else rm -rf "$LOG_DIR"; fi
     exit "$code"
 }
 trap 'printf "\n" >&2; warn checkfix interrupted; cleanup' INT TERM
@@ -181,7 +183,7 @@ fix_prompt() {
 
 build_target() {
     repo_mode && return
-    file_mode && printf '%s\n' "${FILES[@]}" || git diff --name-only "$BASE"...HEAD
+    if file_mode; then printf '%s\n' "${FILES[@]}"; else git diff --name-only "$BASE"...HEAD; fi
 }
 
 finish() { header Done; say checkfix "$clean_count passes in $iter iter ($(($(now) - SCRIPT_START))s)"; exit 0; }
