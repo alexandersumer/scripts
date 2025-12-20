@@ -3,16 +3,17 @@
 set -u -o pipefail
 source "$(dirname "$0")/lib/agentcli.sh"
 
-PRESETS="pr improve build clean check checkfix"
+PRESETS="pr improve build tighten check checkfix resolve"
 
 preset_prompt() {
     case "$1" in
         pr)      echo "Analyze the diff against main and write a brief PR description in one short paragraph explaining the core issue and fix rationale. Skip file lists, bullets, implementation details, and line references. Follow with a one-line summary under 10 words in lowercase without punctuation. Tone: neutral, idiomatic." ;;
         improve) echo "Analyze the diff against main and implement targeted, high-value improvements using robust, standard patterns. Ensure consistency and comprehensive test coverage. Keep the solution simple and self-documenting, strictly avoiding over-engineering and redundant comments." ;;
         build)   echo "Run the build and test suite to ensure all checks pass. Fix any failures by addressing the root cause. Keep the solution simple and robust, strictly avoiding brittle workarounds or error suppression." ;;
-        clean)   echo "Refactor this code to be tighter and cleaner without sacrificing readability. Remove redundancy and fluff, simplify verbose expressions, but don't over-compress. Avoid unnecessary comments. Concise, not cryptic." ;;
+        tighten) echo "Tighten this code. Remove redundancy and fluff, simplify verbose expressions, cut unnecessary comments. Preserve readability. Concise, not cryptic." ;;
         check)   echo "Review for bugs: logic errors, crashes, data loss, security flaws, resource leaks, race conditions, performance problems. Consider overall purpose when evaluating correctness. Skip style, naming, refactoring opinions, speculative issues. Report all instances of each bug pattern found. Output: [PASS] if clean, or [FAIL] with: filename.ext:line - description max 12 words (one per line, no full paths, no markdown)" ;;
         checkfix) echo "Review for bugs: logic errors, crashes, data loss, security flaws, resource leaks, race conditions, performance problems. Consider overall purpose when evaluating correctness. Skip style, naming, refactoring opinions, speculative issues. Fix each bug with minimal changes. Fix all occurrences of each bug pattern. Follow existing patterns. Do not remove unrelated code. Run tests to verify. Output: [PASS] if clean, [DONE] brief summary if fixed, or [BLOCKED] reason if unable." ;;
+        resolve) echo "Resolve merge conflicts with main. Preserve the branch's intent while incorporating updates from main. Remove all conflict markers." ;;
         *) return 1 ;;
     esac
 }
@@ -49,7 +50,7 @@ Presets: $PRESETS
 
 Examples:
     $(basename "$0") pr
-    $(basename "$0") --files lib.py clean
+    $(basename "$0") --files lib.py tighten
     $(basename "$0") --repo -p "Find security issues"
     echo "Review for bugs" | $(basename "$0") -p -
 EOF
@@ -68,11 +69,8 @@ while [[ $# -gt 0 ]]; do
         -l|--cli) require_val "$1" "${2:-}"; cli_cmd "$2" >/dev/null || fatal "unknown CLI: $2"; CLI=$2; shift 2 ;;
         -f|--files)
             shift
-            while [[ $# -gt 0 && ! "$1" =~ ^- ]]; do
-                [[ " $PRESETS " == *" $1 "* ]] && break
-                [[ -e "$1" ]] || fatal "file not found: $1"
-                [[ -f "$1" ]] || fatal "not a file: $1"
-                [[ -r "$1" ]] || fatal "file not readable: $1"
+            while [[ $# -gt 0 && ! "$1" =~ ^- && ! " $PRESETS " == *" $1 "* ]]; do
+                [[ -f "$1" && -r "$1" ]] || fatal "cannot read file: $1"
                 FILES+=("$(realpath "$1")"); shift
             done
             (( ${#FILES[@]} )) || fatal "--files requires at least one file" ;;
@@ -96,10 +94,19 @@ $REPO && (( ${#FILES[@]} )) && fatal "cannot use both --repo and --files"
 if [[ -n "$PRESET" && -n "$PROMPT" ]]; then
     fatal "cannot use both preset and --prompt"
 elif [[ -n "$PRESET" ]]; then
-    $REPO && [[ "$PRESET" =~ ^(pr|improve|clean)$ ]] && fatal "preset '$PRESET' requires file context; use -p or a repo-compatible preset (build, check, checkfix)"
+    $REPO && [[ "$PRESET" =~ ^(pr|improve)$ ]] && fatal "preset '$PRESET' requires diff context; use -p or a repo-compatible preset (build, check, checkfix, tighten)"
     PROMPT=$(preset_prompt "$PRESET") || fatal "unknown preset: $PRESET (use --list to see available)"
 elif [[ -z "$PROMPT" ]]; then
     fatal "missing preset or --prompt (use --help for usage)"
+fi
+
+if [[ "$PRESET" == "resolve" ]] && ! $REPO && (( ! ${#FILES[@]} )); then
+    git rev-parse MERGE_HEAD &>/dev/null || fatal "not in merge conflict state (run git merge first)"
+    root=$(git rev-parse --show-toplevel)
+    while IFS= read -r f; do
+        [[ -n "$f" ]] && FILES+=("$root/$f")
+    done < <(git diff --name-only --diff-filter=U)
+    (( ${#FILES[@]} )) || fatal "no conflicted files found"
 fi
 
 CLI_CMD=$(cli_cmd "$CLI")
