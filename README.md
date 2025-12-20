@@ -40,3 +40,46 @@ Iterative LLM-based code review. Checks code for bugs, fixes them, and repeats u
 3. **Repeat** — Loops until consecutive clean passes (default 3) or max iterations reached
 
 The script detects cycles (returning to a previous state) and guards against runaway changes.
+
+---
+
+## [zap.sh](./zap.sh)
+
+Run a single LLM prompt against code context. Quick one-shot tasks like PR descriptions, improvements, or cleanup.
+
+### Usage
+
+```bash
+# Generate a PR description from current branch diff
+./zap.sh pr
+
+# Clean up specific files
+./zap.sh --files lib.py utils.py clean
+
+# Custom prompt
+./zap.sh -p "Explain this code"
+
+# Prompt from stdin
+echo "Review for bugs" | ./zap.sh -p -
+```
+
+### Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-l, --cli NAME` | LLM CLI to use (claude, codex, gemini, rovo) | claude |
+| `-f, --files FILE...` | Target specific files instead of git diff | — |
+| `-p, --prompt TEXT` | Custom prompt (use `-` for stdin) | — |
+| `-t, --timeout SECONDS` | Timeout per CLI call | 300 |
+| `-r, --retries N` | Retries on failure | 2 |
+| `--raw` | Output raw response without status messages | — |
+| `--list` | List available presets | — |
+
+### Presets
+
+| Preset | Description |
+|--------|-------------|
+| `pr` | Write a brief PR description from the diff |
+| `improve` | Implement targeted improvements |
+| `check` | Run build/tests and fix failures |
+| `clean` | Refactor for clarity without over-compressing |
