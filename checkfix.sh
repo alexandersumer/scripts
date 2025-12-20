@@ -4,54 +4,44 @@ set -u -o pipefail
 source "$(dirname "$0")/lib/agentcli.sh"
 
 header() { printf '\n%b────────────────────────────────────────%b\n%b%s%b\n' "$DIM" "$RESET" "$BOLD" "$1" "$RESET" >&2; }
-
 show_issues() {
     [[ -z "$1" ]] && return
-    local lines count
-    lines=$(grep -E '[a-zA-Z0-9_/-]+\.[a-zA-Z]+:[0-9]+' <<< "$1") || true
+    local lines count; lines=$(grep -E '[a-zA-Z0-9_/-]+\.[a-zA-Z]+:[0-9]+' <<< "$1") || true
     count=$(wc -l <<< "${lines:-x}" | tr -d ' ')
-    if [[ -z "$lines" ]]; then
-        printf '%b%s%b\n' "$DIM" "$(head -5 <<< "$1" | sed 's/^/  /')" "$RESET" >&2
-    else
-        printf '%b%s%b\n' "$DIM" "$(head -10 <<< "$lines" | sed 's/^/  /')" "$RESET" >&2
-        (( count > 10 )) && printf '%b  ...and %d more%b\n' "$DIM" "$((count - 10))" "$RESET" >&2
-    fi
+    if [[ -z "$lines" ]]; then printf '%b%s%b\n' "$DIM" "$(head -5 <<< "$1" | sed 's/^/  /')" "$RESET" >&2
+    else printf '%b%s%b\n' "$DIM" "$(head -10 <<< "$lines" | sed 's/^/  /')" "$RESET" >&2
+         (( count > 10 )) && printf '%b  ...and %d more%b\n' "$DIM" "$((count - 10))" "$RESET" >&2; fi
 }
 
 for cmd in "shasum -a 256" sha256sum md5sum "md5 -r" cksum; do
     command -v "${cmd%% *}" &>/dev/null && { HASH_CMD=$cmd; break; }
 done
-[[ -z "${HASH_CMD:-}" ]] && fatal "no hash command found"
+[[ -z "${HASH_CMD:-}" ]] && fatal "no hash command"
 hash_str() { printf '%s' "$1" | $HASH_CMD | cut -c1-16; }
 
 LOCK_ID=$(hash_str "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
 LOCK_DIR="/tmp/checkfix-${LOCK_ID}.lock" LOCK_PID="$LOCK_DIR/pid" LOG_DIR="/tmp/checkfix-${LOCK_ID}-$$"
-
 MAX_ITERS=15 CLEAN_REQUIRED=3 RETRIES=2 TIMEOUT=1200 STUCK_THRESHOLD=90
-DRY_RUN=false REPO=false CHILD_PID="" PHASE=""
-FILES=() SEEN_HASHES=()
-
+DRY_RUN=false REPO=false CHILD_PID="" PHASE="" FILES=() SEEN_HASHES=()
 CLI="${CHECKFIX_CLI:-claude}"
-[[ -n "${CHECKFIX_CLI:-}" ]] && ! cli_cmd "$CLI" >/dev/null && fatal "unknown CLI: $CLI (available: $CLI_LIST)"
+[[ -n "${CHECKFIX_CLI:-}" ]] && ! cli_cmd "$CLI" >/dev/null && fatal "unknown CLI: $CLI ($CLI_LIST)"
 
 file_mode() { (( ${#FILES[@]} > 0 )); }
 repo_mode() { $REPO; }
 state_hash() {
     if repo_mode; then hash_str "$(git ls-files -z 2>/dev/null | xargs -0 cat 2>/dev/null)"
-    elif file_mode; then hash_str "$(cat -- "${FILES[@]}")"
+    elif file_mode; then hash_str "$(cat "${FILES[@]}")"
     else hash_str "$(git diff "$BASE"...HEAD)"; fi
 }
 diff_size() {
     if repo_mode; then git ls-files -z 2>/dev/null | xargs -0 wc -l 2>/dev/null | tail -1 | awk '{print $1+0}'
-    elif file_mode; then wc -l < <(cat -- "${FILES[@]}") | tr -d ' '
+    elif file_mode; then wc -l < <(cat "${FILES[@]}") | tr -d ' '
     else git diff --numstat "$BASE"...HEAD 2>/dev/null | awk '{s+=$1+$2} END {print s+0}'; fi
 }
-
 check_cycle() {
-    local hash i=0
-    hash=$(state_hash)
+    local hash i=0; hash=$(state_hash)
     for seen in "${SEEN_HASHES[@]}"; do
-        [[ "$seen" == "$hash" ]] && fatal "cycle detected: state matches ${i:+iteration $i}${i:-initial state}"
+        [[ "$seen" == "$hash" ]] && fatal "cycle: state matches $( (( i )) && echo "iteration $i" || echo "initial" )"
         ((i++))
     done
     SEEN_HASHES+=("$hash")
@@ -61,46 +51,35 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS] [--files FILE...]
 
-Iteratively check and fix code until stable.
-
-Modes:
-    Git mode (default):  Check branch diff against main/master
-    File mode:           Check specific files with --files
-    Repo mode:           Let CLI explore entire repo with --repo
+Modes:  Git (default: diff vs main), File (--files), Repo (--repo)
 
 Options:
-    -l, --cli NAME           CLI to use (default: $CLI, available: $CLI_LIST)
-    -f, --files FILE...      Check specific files instead of git diff
-    -R, --repo               Run repo-wide (CLI explores on its own)
-    -m, --max-iterations N   Max iterations (default: $MAX_ITERS)
-    -c, --consecutive N      Consecutive passes needed (default: $CLEAN_REQUIRED)
-    -r, --retries N          Retries per call (default: $RETRIES)
-    -t, --timeout SECONDS    Timeout per call (default: $TIMEOUT)
-    --dry-run                Run without calling the CLI
-    -h, --help               Show this help
-
-Examples:
-    $(basename "$0")                       # Check current branch
-    $(basename "$0") -l codex -f lib.py    # Check file with Codex
-    $(basename "$0") --repo                # Check entire repo
+  -l, --cli NAME          CLI to use (default: $CLI; $CLI_LIST)
+  -f, --files FILE...     Check specific files
+  -R, --repo              Let CLI explore entire repo
+  -m, --max-iterations N  Max iterations (default: $MAX_ITERS)
+  -c, --consecutive N     Passes needed (default: $CLEAN_REQUIRED)
+  -r, --retries N         Retries per call (default: $RETRIES)
+  -t, --timeout SECS      Timeout per call (default: $TIMEOUT)
+  --dry-run               Skip CLI calls
+  -h, --help              Show help
 EOF
     exit 0
 }
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        -l|--cli) require_val "$1" "${2:-}"; cli_cmd "$2" >/dev/null || fatal "unknown CLI: $2"; CLI="$2"; shift 2 ;;
-        -f|--files)
-            shift
+        -l|--cli) require_val "$1" "${2:-}"; cli_cmd "$2" >/dev/null || fatal "unknown CLI: $2"; CLI=$2; shift 2 ;;
+        -f|--files) shift
             while [[ $# -gt 0 && ! "$1" =~ ^- ]]; do
                 [[ -f "$1" && -r "$1" ]] || fatal "file not found: $1"
                 FILES+=("$(realpath "$1")"); shift
             done
             (( ${#FILES[@]} )) || fatal "--files requires at least one file" ;;
         -m|--max-iterations) require_val "$1" "${2:-}"; require_int "$1" "$2"; MAX_ITERS=$2; shift 2 ;;
-        -c|--consecutive)    require_val "$1" "${2:-}"; require_int "$1" "$2"; CLEAN_REQUIRED=$2; shift 2 ;;
-        -r|--retries)        require_val "$1" "${2:-}"; require_int "$1" "$2"; RETRIES=$2; shift 2 ;;
-        -t|--timeout)        require_val "$1" "${2:-}"; require_int "$1" "$2"; TIMEOUT=$2; shift 2 ;;
+        -c|--consecutive) require_val "$1" "${2:-}"; require_int "$1" "$2"; CLEAN_REQUIRED=$2; shift 2 ;;
+        -r|--retries) require_val "$1" "${2:-}"; require_int "$1" "$2"; RETRIES=$2; shift 2 ;;
+        -t|--timeout) require_val "$1" "${2:-}"; require_int "$1" "$2"; TIMEOUT=$2; shift 2 ;;
         -R|--repo) REPO=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
         -h|--help) usage ;;
@@ -108,11 +87,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-$REPO && (( ${#FILES[@]} )) && fatal "cannot use both --repo and --files"
-
+$REPO && (( ${#FILES[@]} )) && fatal "--repo and --files are mutually exclusive"
 CLI_CMD=$(cli_cmd "$CLI")
-[[ -n "${CHECKFIX_CLI_CMD:-}" ]] && CLI_CMD="$CHECKFIX_CLI_CMD" CLI="custom"
-command -v "${CLI_CMD%% *}" &>/dev/null || fatal "$CLI not found in PATH"
+[[ -n "${CHECKFIX_CLI_CMD:-}" ]] && CLI_CMD=$CHECKFIX_CLI_CMD CLI=custom
+command -v "${CLI_CMD%% *}" &>/dev/null || fatal "$CLI not found"
 
 # shellcheck disable=SC2317,SC2329
 cleanup() {
@@ -193,7 +171,10 @@ run_cli() {
         printf '\r\033[K' >&2
         local reason="exit $code"; (( code == 124 )) && reason=timeout; (( code == 0 )) && reason="empty output"
         warn "$CLI" "attempt $attempt/$RETRIES: $reason"
-        (( attempt < RETRIES )) && sleep 5
+        if (( attempt < RETRIES )); then
+            [[ -s "$output" ]] && head -5 "$output" >&2
+            sleep 5
+        fi
     done
     return 1
 }
