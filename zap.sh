@@ -92,7 +92,8 @@ fi
 if [[ "$PRESET" == "resolve" ]] && ! $REPO && (( ! ${#FILES[@]} )); then
     git rev-parse MERGE_HEAD &>/dev/null || fatal "not in merge conflict state"
     root=$(git rev-parse --show-toplevel)
-    while IFS= read -r f; do [[ -n "$f" ]] && FILES+=("$root/$f"); done < <(git diff --name-only --diff-filter=U)
+    while IFS= read -r f; do [[ -n "$f" ]] && FILES+=("$root/$f"); done \
+        < <(git diff --name-only --diff-filter=U)
     (( ${#FILES[@]} )) || fatal "no conflicted files"
 fi
 
@@ -100,7 +101,7 @@ CLI_CMD=$(cli_cmd "$CLI")
 [[ -n "${ZAP_CLI_CMD:-}" ]] && CLI_CMD=$ZAP_CLI_CMD CLI=custom
 command -v "${CLI_CMD%% *}" &>/dev/null || fatal "$CLI not found"
 
-cleanup() { [[ -n "$CHILD_PID" ]] && kill "$CHILD_PID" 2>/dev/null; [[ -n "${TMPFILE:-}" ]] && rm -f "$TMPFILE"; }
+cleanup() { [[ -n "$CHILD_PID" ]] && kill "$CHILD_PID" 2>/dev/null; rm -f "${TMPFILE:-}"; }
 trap 'printf "\n" >&2; warn zap interrupted; cleanup; exit 130' INT TERM
 trap cleanup EXIT
 
@@ -108,23 +109,26 @@ has_changes() { ! git diff --quiet "$@" 2>/dev/null; }
 verify_repo() {
     git rev-parse --git-dir &>/dev/null || fatal "not a git repo; use --files"
     BRANCH=$(git rev-parse --abbrev-ref HEAD) BASE=""
-    for b in main master; do git rev-parse --verify "$b" &>/dev/null && { BASE=$b; break; }; done
+    for b in main master; do
+        git rev-parse --verify "$b" &>/dev/null && { BASE=$b; break; }
+    done
     if [[ -z "$BASE" ]] || ! has_changes "$BASE"...HEAD; then
         local up; up=$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null) || true
         [[ -n "$up" ]] && has_changes "$up"...HEAD && BASE=$up
     fi
     [[ -z "$BASE" ]] && fatal "no base branch; ensure main/master exists or use --files"
-    has_changes "$BASE"...HEAD || has_changes HEAD || has_changes --cached || fatal "no changes to analyze"
+    has_changes "$BASE"...HEAD || has_changes HEAD || has_changes --cached \
+        || fatal "no changes to analyze"
     $RAW || say zap "$BRANCH → $BASE"
 }
 
 build_context() {
     $REPO && return
     if (( ${#FILES[@]} )); then
-        printf '<files>\n'; for f in "${FILES[@]}"; do printf '=== %s ===\n%s\n' "$f" "$(cat "$f")"; done; printf '</files>\n'
-    else
-        printf '<diff>\n%s\n</diff>\n' "$(git diff "$(git merge-base "$BASE" HEAD)")"
-    fi
+        printf '<files>\n'
+        for f in "${FILES[@]}"; do printf '=== %s ===\n%s\n' "$f" "$(cat "$f")"; done
+        printf '</files>\n'
+    else printf '<diff>\n%s\n</diff>\n' "$(git diff "$(git merge-base "$BASE" HEAD)")"; fi
 }
 
 run_cli() {
@@ -132,27 +136,30 @@ run_cli() {
     read -ra cmd <<< "$CLI_CMD"
     for (( attempt=1; attempt<=RETRIES; attempt++ )); do
         start=$(now) last_size=0 last_change=$start; : > "$output"
-        if [[ -n "${TIMEOUT_CMD:-}" ]]; then printf '%s' "$prompt" | "$TIMEOUT_CMD" "${TIMEOUT}s" "${cmd[@]}" > "$output" 2>&1 &
+        if [[ -n "${TIMEOUT_CMD:-}" ]]; then
+            printf '%s' "$prompt" | "$TIMEOUT_CMD" "${TIMEOUT}s" "${cmd[@]}" > "$output" 2>&1 &
         else printf '%s' "$prompt" | "${cmd[@]}" > "$output" 2>&1 & fi
         CHILD_PID=$!
         while kill -0 "$CHILD_PID" 2>/dev/null; do
-            sleep 1; elapsed=$(($(now) - start)); size=$(wc -c < "$output" 2>/dev/null || echo 0); status=active
-            [[ -z "${TIMEOUT_CMD:-}" ]] && (( elapsed >= TIMEOUT )) && { kill "$CHILD_PID" 2>/dev/null; wait "$CHILD_PID" 2>/dev/null; CHILD_PID=""; return 1; }
+            sleep 1; elapsed=$(($(now) - start)); size=$(wc -c < "$output" 2>/dev/null || echo 0)
+            status=active
+            if [[ -z "${TIMEOUT_CMD:-}" ]] && (( elapsed >= TIMEOUT )); then
+                kill "$CHILD_PID" 2>/dev/null; wait "$CHILD_PID" 2>/dev/null; CHILD_PID=""; return 1
+            fi
             if (( size > last_size )); then last_size=$size last_change=$(now)
             elif (( $(now) - last_change >= STUCK_THRESHOLD )); then
-                is_stuck "$output" && { printf '\n' >&2; fatal "CLI blocked on permission prompt"; }; status=stalled
+                is_stuck "$output" && { printf '\n' >&2; fatal "CLI blocked on permission prompt"; }
+                status=stalled
             fi
             $RAW || progress zap "$status" "$elapsed"
         done
         wait "$CHILD_PID" 2>/dev/null; code=$?; CHILD_PID=""
         $RAW || printf '\r\033[K' >&2
         [[ -s "$output" ]] && (( code == 0 )) && return 0
-        local reason="exit $code"; (( code == 124 )) && reason=timeout; (( code == 0 )) && reason="empty output"
+        local reason; reason="exit $code"
+        (( code == 124 )) && reason=timeout; (( code == 0 )) && reason="empty output"
         $RAW || warn "$CLI" "attempt $attempt/$RETRIES: $reason"
-        if (( attempt < RETRIES )); then
-            [[ -s "$output" ]] && ! $RAW && head -5 "$output" >&2
-            sleep 3
-        fi
+        (( attempt < RETRIES )) && { [[ -s "$output" ]] && ! $RAW && head -5 "$output" >&2; sleep 3; }
     done
     return 1
 }
