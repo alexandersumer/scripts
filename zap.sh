@@ -3,16 +3,15 @@
 set -u -o pipefail
 source "$(dirname "$0")/lib/agentcli.sh"
 
-PRESETS="pr improve build tighten check checkfix resolve"
+PRESETS="pr build tighten check checkfix resolve"
+PROMPT_DEFAULTS="If modifying code: be minimal, follow existing patterns, avoid redundancy and unnecessary comments."
 
 preset_prompt() {
     local preset=$1 repo=${2:-false}
     case "$preset" in
         pr)      echo "Analyze the diff against main and write a brief PR description in one short paragraph explaining the core issue and fix rationale. Skip file lists, bullets, implementation details, and line references. Follow with a one-line summary under 10 words in lowercase without punctuation. Tone: neutral, idiomatic." ;;
-        improve) $repo && echo "Implement targeted, high-value improvements using robust, standard patterns. Ensure consistency and comprehensive test coverage. Keep the solution simple and self-documenting, strictly avoiding over-engineering and redundant comments." \
-                      || echo "Analyze the diff against main and implement targeted, high-value improvements using robust, standard patterns. Ensure consistency and comprehensive test coverage. Keep the solution simple and self-documenting, strictly avoiding over-engineering and redundant comments." ;;
         build)   echo "Run the build and test suite to ensure all checks pass. Fix any failures by addressing the root cause. Keep the solution simple and robust, strictly avoiding brittle workarounds or error suppression." ;;
-        tighten) local t="this code"; $repo && t="the codebase"; echo "Tighten $t. Remove redundancy and fluff, simplify verbose expressions, cut unnecessary comments. Preserve readability. Concise, not cryptic." ;;
+        tighten) local t="this code"; $repo && t="the codebase"; echo "Tighten $t. Remove redundancy, simplify verbose expressions, cut unnecessary comments. Keep lines reasonable length. Concise, not cryptic." ;;
         check)   echo "Review for bugs: logic errors, crashes, data loss, security flaws, resource leaks, race conditions, performance problems. Consider overall purpose when evaluating correctness. Skip style, naming, refactoring opinions, speculative issues. Report all instances of each bug pattern found. Output: [PASS] if clean, or [FAIL] with: filename.ext:line - description max 12 words (one per line, no full paths, no markdown)" ;;
         checkfix) echo "Review for bugs: logic errors, crashes, data loss, security flaws, resource leaks, race conditions, performance problems. Consider overall purpose when evaluating correctness. Skip style, naming, refactoring opinions, speculative issues. Fix each bug with minimal changes. Fix all occurrences of each bug pattern. Follow existing patterns. Do not remove unrelated code. Run tests to verify. Output: [PASS] if clean, [DONE] brief summary if fixed, or [BLOCKED] reason if unable." ;;
         resolve) echo "Resolve merge conflicts with main. Preserve the branch's intent while incorporating updates from main. Remove all conflict markers." ;;
@@ -98,7 +97,9 @@ if [[ -n "$PRESET" && -n "$PROMPT" ]]; then
 elif [[ -n "$PRESET" ]]; then
     $REPO && [[ "$PRESET" =~ ^(pr|resolve)$ ]] && fatal "preset '$PRESET' requires diff context; use -p or a repo-compatible preset"
     PROMPT=$(preset_prompt "$PRESET" "$REPO") || fatal "unknown preset: $PRESET (use --list to see available)"
-elif [[ -z "$PROMPT" ]]; then
+elif [[ -n "$PROMPT" ]]; then
+    PROMPT="$PROMPT"$'\n\n'"$PROMPT_DEFAULTS"
+else
     fatal "missing preset or --prompt (use --help for usage)"
 fi
 

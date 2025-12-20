@@ -114,7 +114,7 @@ CLI_CMD=$(cli_cmd "$CLI")
 [[ -n "${CHECKFIX_CLI_CMD:-}" ]] && CLI_CMD="$CHECKFIX_CLI_CMD" CLI="custom"
 command -v "${CLI_CMD%% *}" &>/dev/null || fatal "$CLI not found in PATH"
 
-# shellcheck disable=SC2329  # Used by trap
+# shellcheck disable=SC2317,SC2329
 cleanup() {
     local code=$?
     trap - EXIT
