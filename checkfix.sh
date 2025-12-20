@@ -1,13 +1,11 @@
 #!/bin/bash
 {
-set -o pipefail
+set -u -o pipefail
 
 RESET='' RED='' GREEN='' YELLOW='' BOLD='' DIM=''
-if [[ -t 1 || -t 2 ]] && [[ -z "${NO_COLOR:-}" ]]; then
-    if command -v tput &>/dev/null && (( $(tput colors 2>/dev/null || echo 0) >= 8 )); then
-        BOLD=$(tput bold) DIM=$(tput dim) RESET=$(tput sgr0)
-        RED=$BOLD$(tput setaf 1) GREEN=$BOLD$(tput setaf 2) YELLOW=$BOLD$(tput setaf 3)
-    fi
+if [[ -t 1 || -t 2 ]] && [[ -z "${NO_COLOR:-}" ]] && command -v tput &>/dev/null && (( $(tput colors 2>/dev/null || echo 0) >= 8 )); then
+    BOLD=$(tput bold) DIM=$(tput dim) RESET=$(tput sgr0)
+    RED=$BOLD$(tput setaf 1) GREEN=$BOLD$(tput setaf 2) YELLOW=$BOLD$(tput setaf 3)
 fi
 
 say()      { printf '%s: %s\n' "$1" "$2" >&2; }
@@ -125,6 +123,7 @@ require_int "--retries" "$RETRIES"
 require_int "--timeout" "$TIMEOUT"
 
 CLI_CMD=$(cli_cmd "$CLI")
+[[ -n "${CHECKFIX_CLI_CMD:-}" ]] && CLI_CMD="$CHECKFIX_CLI_CMD" CLI="custom"
 command -v "${CLI_CMD%% *}" &>/dev/null || fatal "$CLI not found in PATH"
 
 cleanup() {
@@ -159,7 +158,7 @@ verify_repo() {
     BRANCH=$(git rev-parse --abbrev-ref HEAD)
     [[ "$BRANCH" =~ ^(main|master)$ ]] && fatal "on protected branch '$BRANCH': checkout a feature branch or use --files"
 
-    for b in main master; do git rev-parse --verify "$b" &>/dev/null && { BASE=$b; break; }; done
+    BASE=; for b in main master; do git rev-parse --verify "$b" &>/dev/null && { BASE=$b; break; }; done
     if [[ -z "$BASE" ]] || git diff --quiet "$BASE"...HEAD 2>/dev/null; then
         local upstream=$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
         [[ -n "$upstream" ]] && ! git diff --quiet "$upstream"...HEAD 2>/dev/null && BASE=$upstream
@@ -210,7 +209,7 @@ run_cli() {
         [[ -s "$output" ]] && (( code == 0 )) && return 0
 
         printf '\r\033[K' >&2
-        local reason=$( (( code == 124 )) && echo timeout || { (( code == 0 )) && echo "empty output" || echo "exit $code"; } )
+        local reason="exit $code"; (( code == 124 )) && reason=timeout; (( code == 0 )) && reason="empty output"
         warn "$CLI" "attempt $attempt/$RETRIES: $reason"
         (( attempt < RETRIES )) && sleep 5
     done
@@ -268,9 +267,9 @@ run_fix() {
         fatal "fix made no changes"
     fi
 
-    size_after=$(diff_size) changed=${size_after#-}; changed=$((${changed:-0} - ${size_before:-0}))
-    (( changed < 0 )) && changed=$((-changed))
-    (( changed > 1000 )) && fatal "fix too large: exceeds 1000 line safety threshold"
+    size_after=$(diff_size) changed=$(( size_after - size_before ))
+    (( changed < 0 )) && changed=$(( -changed ))
+    (( changed > 1000 )) && fatal "fix too large: exceeds 1000 line threshold"
 
     check_cycle
     ok fix "$(($(date +%s) - start))" "$(extract_tag DONE "$LOG_DIR/fix_$iter.txt" || echo completed)"
