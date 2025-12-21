@@ -3,15 +3,18 @@
 set -u -o pipefail
 source "$(dirname "$0")/common/agentcli.sh"
 
-header() { printf '\n%b───────────────────────────────────%b\n%b%s%b\n' "$DIM" "$RESET" "$BOLD" "$1" "$RESET" >&2; }
+header() { printf '\n%b──────────────────────%b\n%b%s%b\n' "$DIM" "$RESET" "$BOLD" "$1" "$RESET" >&2; }
 show_issues() {
     [[ -z "$1" ]] && return
     local lines count
     lines=$(grep -E '[a-zA-Z0-9_/-]+\.[a-zA-Z]+:[0-9]+' <<< "$1") || true
-    count=$(wc -l <<< "${lines:-x}" | tr -d ' ')
-    if [[ -z "$lines" ]]; then printf '%b%s%b\n' "$DIM" "$(head -5 <<< "$1" | sed 's/^/  /')" "$RESET" >&2
-    else printf '%b%s%b\n' "$DIM" "$(head -10 <<< "$lines" | sed 's/^/  /')" "$RESET" >&2
-         (( count > 10 )) && printf '%b  ...+%d more%b\n' "$DIM" "$((count - 10))" "$RESET" >&2; fi
+    count=${lines:+$(wc -l <<< "$lines")}; count=${count:-0}
+    if [[ -z "$lines" ]]; then
+        printf '%b%s%b\n' "$DIM" "$(head -5 <<< "$1" | sed 's/^/  /')" "$RESET" >&2
+    else
+        printf '%b%s%b\n' "$DIM" "$(head -10 <<< "$lines" | sed 's/^/  /')" "$RESET" >&2
+        (( count > 10 )) && printf '%b  ...+%d more%b\n' "$DIM" "$((count - 10))" "$RESET" >&2
+    fi
 }
 
 for cmd in "shasum -a 256" sha256sum md5sum "md5 -r" cksum; do
@@ -21,8 +24,9 @@ done
 hash_str() { printf '%s' "$1" | $HASH_CMD | cut -c1-16; }
 
 LOCK_ID=$(hash_str "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
-LOCK_DIR="/tmp/checkfix-${LOCK_ID}.lock" LOCK_PID="$LOCK_DIR/pid" LOG_DIR="/tmp/checkfix-${LOCK_ID}-$$"
-MAX_ITERS=15 CLEAN_REQUIRED=3 RETRIES=2 TIMEOUT=1200 STUCK_THRESHOLD=90
+LOCK_DIR="/tmp/checkfix-${LOCK_ID}.lock" LOCK_PID="$LOCK_DIR/pid"
+LOG_DIR="/tmp/checkfix-${LOCK_ID}-$$"
+MAX_ITERS=15 CLEAN_REQUIRED=3 RETRIES=2 TIMEOUT=1200
 DRY_RUN=false REPO=false CHILD_PID="" PHASE="" FILES=() SEEN_HASHES=()
 CLI="${CHECKFIX_CLI:-claude}"
 [[ -n "${CHECKFIX_CLI:-}" ]] && ! cli_cmd "$CLI" >/dev/null && fatal "unknown CLI: $CLI ($CLI_LIST)"
@@ -88,7 +92,6 @@ CLI_CMD=$(cli_cmd "$CLI")
 [[ -n "${CHECKFIX_CLI_CMD:-}" ]] && CLI_CMD=$CHECKFIX_CLI_CMD CLI=custom
 command -v "${CLI_CMD%% *}" &>/dev/null || fatal "$CLI not found"
 
-# invoked via trap
 # shellcheck disable=SC2317,SC2329
 cleanup() {
     local code=$?; trap - EXIT
@@ -117,35 +120,31 @@ acquire_lock() {
 verify_repo() {
     git rev-parse --git-dir &>/dev/null || fatal "not a git repo: use --files"
     BRANCH=$(git rev-parse --abbrev-ref HEAD)
-    [[ "$BRANCH" =~ ^(main|master)$ ]] && fatal "on protected branch '$BRANCH': use feature branch or --files"
-    BASE=; for b in main master; do git rev-parse --verify "$b" &>/dev/null && { BASE=$b; break; }; done
-    if [[ -z "$BASE" ]] || git diff --quiet "$BASE"...HEAD 2>/dev/null; then
-        local up; up=$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null) || true
-        [[ -n "$up" ]] && ! git diff --quiet "$up"...HEAD 2>/dev/null && BASE=$up
-    fi
-    [[ -z "$BASE" ]] && fatal "no base branch: ensure main/master exists or use --files"
-    git diff --quiet "$BASE"...HEAD 2>/dev/null && git diff --quiet HEAD 2>/dev/null && \
-        git diff --quiet --cached 2>/dev/null && fatal "no changes to check"
+    [[ "$BRANCH" =~ ^(main|master)$ ]] && fatal "on protected branch '$BRANCH'"
+    BASE=$(find_base) || fatal "no base branch: ensure main/master exists or use --files"
+    has_changes "$BASE"...HEAD || has_changes HEAD || has_changes --cached \
+        || fatal "no changes to check"
     say checkfix "$BRANCH → $BASE"
 }
 
 run_cli() {
     local prompt=$1 output=$2 start last_size last_change elapsed size status code
-    read -ra cmd_parts <<< "$CLI_CMD"
+    read -ra cmd <<< "$CLI_CMD"
     for (( attempt=1; attempt<=RETRIES; attempt++ )); do
         $DRY_RUN && { echo "[PASS] Dry run" > "$output"; return 0; }
         start=$(now) last_size=0 last_change=$start; : > "$output"
         if [[ -n "${TIMEOUT_CMD:-}" ]]; then
-            printf '%s' "$prompt" | "$TIMEOUT_CMD" "${TIMEOUT}s" "${cmd_parts[@]}" > "$output" 2>&1 &
-        else printf '%s' "$prompt" | "${cmd_parts[@]}" > "$output" 2>&1 &
-        fi
+            printf '%s' "$prompt" | "$TIMEOUT_CMD" "${TIMEOUT}s" "${cmd[@]}" > "$output" 2>&1 &
+        else printf '%s' "$prompt" | "${cmd[@]}" > "$output" 2>&1 & fi
         CHILD_PID=$!
         while kill -0 "$CHILD_PID" 2>/dev/null; do
-            sleep 1; elapsed=$(($(now) - start)); size=$(wc -c < "$output" 2>/dev/null || echo 0); status=active
-            [[ -z "${TIMEOUT_CMD:-}" ]] && (( elapsed >= TIMEOUT )) && \
-                { kill "$CHILD_PID" 2>/dev/null; wait "$CHILD_PID" 2>/dev/null; CHILD_PID=""; return 1; }
+            sleep 1; elapsed=$(($(now) - start)); size=$(wc -c < "$output" 2>/dev/null || echo 0)
+            status=active
+            if [[ -z "${TIMEOUT_CMD:-}" ]] && (( elapsed >= TIMEOUT )); then
+                kill "$CHILD_PID" 2>/dev/null; wait "$CHILD_PID" 2>/dev/null; CHILD_PID=""; return 1
+            fi
             if (( size > last_size )); then last_size=$size last_change=$(now)
-            elif (( $(now) - last_change >= STUCK_THRESHOLD )); then
+            elif (( $(now) - last_change >= 90 )); then
                 is_stuck "$output" && { printf '\n' >&2; fatal "CLI blocked on permission prompt"; }
                 status=stalled
             fi
@@ -154,7 +153,8 @@ run_cli() {
         wait "$CHILD_PID" 2>/dev/null; code=$?; CHILD_PID=""
         [[ -s "$output" ]] && (( code == 0 )) && return 0
         printf '\r\033[K' >&2
-        local reason="exit $code"; (( code == 124 )) && reason=timeout; (( code == 0 )) && reason="empty output"
+        local reason="exit $code"
+        (( code == 124 )) && reason=timeout; (( code == 0 )) && reason="empty output"
         warn "$CLI" "attempt $attempt/$RETRIES: $reason"
         (( attempt < RETRIES )) && { [[ -s "$output" ]] && head -5 "$output" >&2; sleep 5; }
     done
@@ -186,10 +186,14 @@ build_target() {
     if file_mode; then printf '%s\n' "${FILES[@]}"; else git diff --name-only "$BASE"...HEAD; fi
 }
 
-finish() { header Done; say checkfix "$clean_count passes in $iter iter ($(($(now) - SCRIPT_START))s)"; exit 0; }
+finish() {
+    header Done
+    say checkfix "$clean_count passes in $iter iter ($(($(now) - SCRIPT_START))s)"
+    exit 0
+}
 
 run_fix() {
-    local issues=$1 target=$2 start hash_before hash_after size_before size_after changed
+    local issues=$1 target=$2 start hash_before hash_after size_before delta
     PHASE=fix; progress fix starting 0
     start=$(now) hash_before=$(state_hash) size_before=$(diff_size)
     run_cli "$(fix_prompt "$issues" "$target")" "$LOG_DIR/fix_$iter.txt" || fatal "fix failed"
@@ -200,7 +204,7 @@ run_fix() {
         local summary; summary=$(extract_tag DONE "$LOG_DIR/fix_$iter.txt")
         [[ -n "$summary" ]] && warn fix "CLI claimed: $summary"
         warn fix "no changes, re-verifying..."
-        local vstart=$(($(now))); PHASE=verify; progress verify starting 0
+        local vstart; vstart=$(now); PHASE=verify; progress verify starting 0
         if run_cli "$(check_prompt "$target")" "$LOG_DIR/verify_$iter.txt" && \
            is_clean "$(<"$LOG_DIR/verify_$iter.txt")"; then
             ok verify "$(($(now) - vstart))" "false positive"
@@ -208,9 +212,9 @@ run_fix() {
         fi
         fatal "fix made no changes, issue persists"
     fi
-    size_after=$(diff_size); changed=$(( size_after - size_before ))
-    (( changed < 0 )) && changed=$(( -changed ))
-    (( changed > 1000 )) && fatal "fix too large (>1000 lines)"
+    delta=$(( $(diff_size) - size_before ))
+    (( delta < 0 )) && delta=$(( -delta ))
+    (( delta > 1000 )) && fatal "fix too large (>1000 lines)"
     check_cycle
     ok fix "$(($(now) - start))" "$(extract_tag DONE "$LOG_DIR/fix_$iter.txt" || echo fixed)"
     clean_count=0

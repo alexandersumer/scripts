@@ -1,4 +1,3 @@
-# vars used by sourcing scripts
 # shellcheck shell=bash disable=SC2034
 SCRIPT_NAME="${SCRIPT_NAME:-$(basename "$0" .sh)}"
 RESET='' RED='' GREEN='' YELLOW='' BOLD='' DIM=''
@@ -33,5 +32,19 @@ require_val() { [[ -n ${2:-} && ! $2 =~ ^- ]] || fatal "$1 requires a value"; }
 is_stuck() {
     [[ -f $1 ]] || return 1
     local t; t=$(tail -20 "$1" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-    [[ $t =~ (allow|permit|approve|confirm|proceed).*(y/n|\[y\]|yes.*no|\?) ]] || [[ $t =~ [\(\[]y/?n[\)\]] ]]
+    [[ $t =~ (allow|permit|approve|confirm|proceed).*(y/n|\[y\]|yes.*no|\?) || $t =~ [\(\[]y/?n[\)\]] ]]
+}
+
+has_changes() { ! git diff --quiet "$@" 2>/dev/null; }
+
+find_base() {
+    local base up
+    for b in main master; do
+        git rev-parse --verify "$b" &>/dev/null && { base=$b; break; }
+    done
+    if [[ -z "$base" ]] || ! has_changes "$base"...HEAD; then
+        up=$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null) || true
+        [[ -n "$up" ]] && has_changes "$up"...HEAD && base=$up
+    fi
+    [[ -n "$base" ]] && echo "$base"
 }
