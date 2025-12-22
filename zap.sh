@@ -13,7 +13,7 @@ preset_prompt() {
 Analyze diff vs main. Write brief PR description: one paragraph on primary functional
 change and its rationale—prioritize behavior over cosmetic/structural. Skip file lists,
 bullets, implementation details, line refs. Follow with one-line summary under 10
-words, lowercase, no punctuation. Neutral tone.
+words, no punctuation. Neutral tone.
 END
             ;;
         build) echo "Run build and tests. Fix failures at root cause. Keep fixes simple." ;;
