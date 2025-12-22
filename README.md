@@ -72,7 +72,7 @@ echo "Review for bugs" | ./zap.sh -p -
 | `-f, --files FILE...` | Target specific files instead of git diff | — |
 | `-R, --repo` | Run prompt repo-wide (CLI explores on its own) | — |
 | `-p, --prompt TEXT` | Custom prompt (use `-` for stdin) | — |
-| `-t, --timeout SECS` | Timeout per CLI call | 300 |
+| `-t, --timeout SECS` | Timeout per CLI call | 1200 |
 | `-r, --retries N` | Retries on failure | 2 |
 | `--raw` | Output raw response without status messages | — |
 | `--list` | List available presets | — |

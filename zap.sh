@@ -1,7 +1,7 @@
 #!/bin/bash
 {
 set -u -o pipefail
-source "$(dirname "$0")/common/agentcli.sh"
+source "$(dirname "$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")")/common/agentcli.sh"
 
 PRESETS="pr build tighten check checkfix resolve"
 PROMPT_DEFAULTS="If modifying code: be minimal, follow existing patterns, avoid redundancy."
