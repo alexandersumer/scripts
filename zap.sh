@@ -22,13 +22,13 @@ END
         check) cat <<'END'
 Review for bugs: logic errors, crashes, data loss, security flaws, resource leaks, races.
 Skip style/naming opinions. Report all instances. Output: [PASS] if clean, or [FAIL]
-with: file.ext:line - description max 12 words (one per line, no markdown)
+with: file.ext:line - "quoted code" - issue (max 12 words, one per line, no markdown)
 END
             ;;
         checkfix) cat <<'END'
-Review for bugs: logic errors, crashes, data loss, security flaws, resource leaks, races.
-Skip style/naming opinions. Fix each bug minimally, all occurrences. Follow existing
-patterns. Run tests. Output: [PASS] if clean, [DONE] summary, [BLOCKED] reason.
+Read files first. Review for bugs: logic errors, crashes, data loss, security flaws,
+resource leaks, races. Skip style/naming opinions. If bugs found, fix each minimally,
+all occurrences, follow existing patterns, run tests. Output: [PASS], [DONE], or [BLOCKED].
 END
             ;;
         resolve) echo "Resolve merge conflicts. Preserve branch intent. Remove all conflict markers." ;;

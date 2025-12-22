@@ -164,9 +164,9 @@ run_cli() {
 is_clean() { local s=${1//[[:space:]*_\`#]/}; [[ "$s" =~ \[PASS\] && ! "$s" =~ \[FAIL\] ]]; }
 extract_tag() { grep -oE "\[$1\].*" "$2" 2>/dev/null | head -1 | sed "s/\[$1\][[:space:]]*//"; }
 
-CHECK_BODY='Review for bugs: logic errors, crashes, data loss, security flaws, resource leaks, race conditions.
+CHECK_BODY='Read files first. Review for bugs: logic errors, crashes, data loss, security flaws, resource leaks, races.
 Skip style, naming, refactoring opinions, speculative issues. Report all instances of each bug pattern.
-Output: [PASS] if clean, or [FAIL] with: filename.ext:line - description (max 12 words, one per line)'
+Output: [PASS] if clean, or [FAIL] with: filename.ext:line - "quoted code" - issue (max 12 words, one per line)'
 
 check_prompt() {
     if repo_mode; then printf '%s\n' "$CHECK_BODY"
