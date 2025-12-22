@@ -10,9 +10,10 @@ preset_prompt() {
     local preset=$1 repo=${2:-false} t
     case "$preset" in
         pr) cat <<'END'
-Analyze diff vs main. Write brief PR description: one paragraph on core issue and fix
-rationale. Skip file lists, bullets, implementation details, line refs. Follow with
-one-line summary under 10 words, lowercase, no punctuation. Neutral tone.
+Analyze diff vs main. Write brief PR description: one paragraph on primary functional
+change and its rationale—prioritize behavior over cosmetic/structural. Skip file lists,
+bullets, implementation details, line refs. Follow with one-line summary under 10
+words, lowercase, no punctuation. Neutral tone.
 END
             ;;
         build) echo "Run build and tests. Fix failures at root cause. Keep fixes simple." ;;
