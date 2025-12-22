@@ -134,6 +134,10 @@ verify_repo() {
 build_context() {
     $REPO && return
     if (( ${#FILES[@]} )); then
+        if [[ "$PRESET" == "resolve" ]]; then
+            local merge_base; merge_base=$(git merge-base HEAD MERGE_HEAD 2>/dev/null)
+            [[ -n "$merge_base" ]] && printf '<branch-diff>\n%s\n</branch-diff>\n' "$(git diff "$merge_base" HEAD -- "${FILES[@]}" 2>/dev/null)"
+        fi
         printf '<files>\n'
         for f in "${FILES[@]}"; do printf '=== %s ===\n%s\n' "$f" "$(cat "$f")"; done
         printf '</files>\n'
