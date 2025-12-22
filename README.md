@@ -87,14 +87,13 @@ echo "Review for bugs" | ./zap.sh -p -
 | `check` | Review for bugs with [PASS]/[FAIL] output |
 | `checkfix` | Review for bugs and fix them |
 | `resolve` | Resolve merge conflicts with main |
-| `clean` | Clean up code: simplify, remove dead code, improve naming |
 
 ### Iterative cleanup
 
 Run until no more changes are found:
 
 ```bash
-for i in {1..5}; do zap --repo clean || break; done
+for i in {1..5}; do zap --repo tighten || break; done
 ```
 
 Useful for multi-pass cleanup where each run may expose new opportunities.
