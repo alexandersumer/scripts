@@ -28,6 +28,7 @@ LOCK_DIR="/tmp/checkfix-${LOCK_ID}.lock" LOCK_PID="$LOCK_DIR/pid"
 LOG_DIR="/tmp/checkfix-${LOCK_ID}-$$"
 MAX_ITERS=15 CLEAN_REQUIRED=3 RETRIES=2 TIMEOUT=1200
 DRY_RUN=false REPO=false CHILD_PID="" PHASE="" FILES=() SEEN_HASHES=()
+CUSTOM_CHECK="" CUSTOM_FIX=""
 CLI="${CHECKFIX_CLI:-claude}"
 [[ -n "${CHECKFIX_CLI:-}" ]] && ! cli_cmd "$CLI" >/dev/null && fatal "unknown CLI: $CLI ($CLI_LIST)"
 
@@ -62,6 +63,8 @@ Modes: Git (diff vs main), File (--files), Repo (--repo)
   -c, --consecutive     Passes needed (default: $CLEAN_REQUIRED)
   -r, --retries         Retries per call (default: $RETRIES)
   -t, --timeout SECS    Timeout per call (default: $TIMEOUT)
+  -C, --check-prompt P  Custom check prompt (- for stdin)
+  -F, --fix-prompt P    Custom fix prompt (- for stdin)
   --dry-run             Skip CLI calls
   -h, --help            Show help
 EOF
@@ -80,6 +83,8 @@ while (( $# )); do
         -c|--consecutive) require_val "$1" "${2:-}"; require_int "$1" "$2"; CLEAN_REQUIRED=$2; shift 2 ;;
         -r|--retries) require_val "$1" "${2:-}"; require_int "$1" "$2"; RETRIES=$2; shift 2 ;;
         -t|--timeout) require_val "$1" "${2:-}"; require_int "$1" "$2"; TIMEOUT=$2; shift 2 ;;
+        -C|--check-prompt) require_val "$1" "${2:-}"; [[ "$2" == "-" ]] && CUSTOM_CHECK=$(cat) || CUSTOM_CHECK=$2; shift 2 ;;
+        -F|--fix-prompt) require_val "$1" "${2:-}"; [[ "$2" == "-" ]] && CUSTOM_FIX=$(cat) || CUSTOM_FIX=$2; shift 2 ;;
         -R|--repo) REPO=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
         -h|--help) usage ;;
@@ -164,17 +169,19 @@ run_cli() {
 is_clean() { local s=${1//[[:space:]*_\`#]/}; [[ "$s" =~ \[PASS\] && ! "$s" =~ \[FAIL\] ]]; }
 extract_tag() { grep -oE "\[$1\].*" "$2" 2>/dev/null | head -1 | sed "s/\[$1\][[:space:]]*//"; }
 
-CHECK_BODY='Read files first. Review for bugs: logic errors, crashes, data loss, security flaws, resource leaks, races.
-Skip style, naming, refactoring opinions, speculative issues. Report all instances of each bug pattern.
-Output: [PASS] if clean, or [FAIL] with: filename.ext:line - "quoted code" - issue (max 12 words, one per line)'
+DEFAULT_CHECK='Read files first. Review for bugs: logic errors, crashes, data loss, security flaws, resource leaks, races.
+Skip style, naming, refactoring opinions, speculative issues. Report all instances of each bug pattern.'
+CHECK_FORMAT='Output: [PASS] if clean, or [FAIL] with: filename.ext:line - "quoted code" - issue (max 12 words, one per line)'
+CHECK_BODY="${CUSTOM_CHECK:-$DEFAULT_CHECK}"$'\n'"$CHECK_FORMAT"
 
 check_prompt() {
     if repo_mode; then printf '%s\n' "$CHECK_BODY"
     else printf '<files>\n%s\n</files>\n\n%s\n' "$1" "$CHECK_BODY"; fi
 }
 
-FIX_BODY='Fix each issue minimally. Fix all occurrences. Follow existing patterns. Run tests.
-Output: [DONE] brief summary (max 10 words), or [BLOCKED] reason.'
+DEFAULT_FIX='Fix each issue minimally. Fix all occurrences. Follow existing patterns. Run tests.'
+FIX_FORMAT='Output: [DONE] brief summary (max 10 words), or [BLOCKED] reason.'
+FIX_BODY="${CUSTOM_FIX:-$DEFAULT_FIX}"$'\n'"$FIX_FORMAT"
 
 fix_prompt() {
     if repo_mode; then printf '<issues>\n%s\n</issues>\n\n%s\n' "$1" "$FIX_BODY"
